@@ -7,6 +7,7 @@
 """
 
 import json
+import os
 import time
 import random
 import math
@@ -18,15 +19,16 @@ except ImportError:
     import sys
     sys.exit(1)
 
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-MQTT_USERNAME = "admin"
-MQTT_PASSWORD = "public"
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "admin")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "public")
 MQTT_TOPIC = "balance/sensor/data"
 MQTT_CLIENT_ID = "balance-simulator"
 
-TOTAL_BALANCES = 100
-PUBLISH_INTERVAL = 3600
+TOTAL_BALANCES = int(os.environ.get("TOTAL_BALANCES", "100"))
+PUBLISH_INTERVAL = int(os.environ.get("PUBLISH_INTERVAL", "3600"))
+FAST_INTERVAL = int(os.environ.get("FAST_INTERVAL", "5"))
 
 CST = timezone(timedelta(hours=8))
 
@@ -137,7 +139,6 @@ class KnifeEdgeWearSimulator:
 
 
 def init_balance_data():
-    """初始化100件天平的基础数据"""
     for i in range(1, TOTAL_BALANCES + 1):
         balance_code = f"BAL-{i:04d}"
         balance_type = BALANCE_TYPES[i % 3 == 0 and 1 or 0]
@@ -153,11 +154,25 @@ def init_balance_data():
         base_knife_edge = 1.5 + random.uniform(0, 1.0)
         base_error_std = 0.003 + (i % 5) * 0.002
 
-        initial_wear = random.uniform(0, 0.08)
+        if i % 5 == 0:
+            initial_wear = random.uniform(0.16, 0.30)
+        elif i % 5 == 4:
+            initial_wear = random.uniform(0.01, 0.08)
+        else:
+            initial_wear = random.uniform(0.0, 0.02)
 
         wear_sim = KnifeEdgeWearSimulator(material)
         wear_sim.accumulated_wear = initial_wear
-        wear_sim.total_usage = random.randint(0, 500)
+
+        if initial_wear > 0.15:
+            wear_sim.total_usage = random.randint(8000, 20000)
+            wear_sim.first_usage_time = datetime.now(CST) - timedelta(days=random.randint(365, 730))
+        elif initial_wear > 0.01:
+            wear_sim.total_usage = random.randint(2000, 8000)
+            wear_sim.first_usage_time = datetime.now(CST) - timedelta(days=random.randint(90, 365))
+        else:
+            wear_sim.total_usage = random.randint(0, 500)
+            wear_sim.first_usage_time = datetime.now(CST) - timedelta(days=random.randint(0, 90))
 
         BALANCE_DATA[balance_code] = {
             "id": i,
@@ -180,7 +195,10 @@ def generate_measurement(balance_code):
     data = BALANCE_DATA[balance_code]
     wear_sim = data["wear_simulator"]
 
-    nominal_mass = random.choice([1.0, 2.0, 5.0, 10.0, 20.0, 50.0])
+    nominal_mass = random.choice([
+        1.0, 2.0, 5.0, 10.0, 15.625, 20.0, 25.0,
+        31.25, 50.0, 62.5, 100.0, 125.0, 250.0, 500.0
+    ])
 
     left_arm = data["base_left_arm"] + random.uniform(-0.1, 0.1)
     right_arm = data["base_right_arm"] + random.uniform(-0.1, 0.1)
@@ -384,26 +402,22 @@ def run_specific_balance(balance_code, count=10, interval=1):
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    if len(sys.argv) > 1:
-        mode = sys.argv[1]
+    parser = argparse.ArgumentParser(description="古代天平模拟器")
+    parser.add_argument("--mode", choices=["normal", "fast", "single", "balance"],
+                        default=os.environ.get("SIM_MODE", "normal"),
+                        help="运行模式: normal/fast/single/balance")
+    parser.add_argument("--balance-code", help="特定天平编码(balance模式)")
+    parser.add_argument("--count", type=int, default=10, help="发布条数")
+    parser.add_argument("--interval", type=float, default=1.0, help="发布间隔(秒)")
+    args = parser.parse_args()
 
-        if mode == "single":
-            run_single_publish()
-        elif mode == "fast":
-            run_simulation(fast_mode=True)
-        elif mode == "balance" and len(sys.argv) > 2:
-            balance_code = sys.argv[2]
-            count = int(sys.argv[3]) if len(sys.argv) > 3 else 10
-            interval = float(sys.argv[4]) if len(sys.argv) > 4 else 1
-            run_specific_balance(balance_code, count, interval)
-        else:
-            print("用法:")
-            print("  python balance_simulator.py           # 正常模式 (每小时一轮)")
-            print("  python balance_simulator.py fast      # 快速模式 (每5秒一轮)")
-            print("  python balance_simulator.py single    # 单轮发布")
-            print("  python balance_simulator.py balance <code> [count] [interval]")
-            print("     例: python balance_simulator.py balance BAL-0001 10 1")
+    if args.mode == "single":
+        run_single_publish()
+    elif args.mode == "fast":
+        run_simulation(fast_mode=True)
+    elif args.mode == "balance" and args.balance_code:
+        run_specific_balance(args.balance_code, args.count, args.interval)
     else:
-        run_simulation()
+        run_simulation(fast_mode=(args.mode == "fast"))
