@@ -3,7 +3,7 @@ package com.metrology.balance.controller;
 import com.metrology.balance.dto.BalanceSensorData;
 import com.metrology.balance.entity.Balance;
 import com.metrology.balance.entity.BalanceMeasurement;
-import com.metrology.balance.service.BalanceMeasurementService;
+import com.metrology.balance.modules.mqtt_receiver.MqttReceiverService;
 import com.metrology.balance.service.BalanceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +25,7 @@ import java.util.Map;
 public class BalanceController {
 
     private final BalanceService balanceService;
-    private final BalanceMeasurementService measurementService;
+    private final MqttReceiverService receiverService;
 
     @GetMapping
     public ResponseEntity<?> getBalances(
@@ -156,7 +156,7 @@ public class BalanceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endTime) {
         try {
-            List<BalanceMeasurement> measurements = measurementService.getMeasurements(id, startTime, endTime);
+            List<BalanceMeasurement> measurements = receiverService.getMeasurements(id, startTime, endTime);
             return ResponseEntity.ok(measurements);
         } catch (Exception e) {
             log.error("获取测量数据失败", e);
@@ -167,7 +167,7 @@ public class BalanceController {
     @GetMapping("/measurements/latest")
     public ResponseEntity<?> getLatestMeasurements(@RequestParam(defaultValue = "20") int limit) {
         try {
-            List<BalanceMeasurement> measurements = measurementService.getLatestMeasurements();
+            List<BalanceMeasurement> measurements = receiverService.getLatestMeasurements(limit);
             return ResponseEntity.ok(measurements);
         } catch (Exception e) {
             log.error("获取最新测量数据失败", e);
@@ -178,7 +178,7 @@ public class BalanceController {
     @PostMapping("/measurements")
     public ResponseEntity<?> addMeasurement(@RequestBody BalanceSensorData sensorData) {
         try {
-            BalanceMeasurement measurement = measurementService.processSensorData(sensorData);
+            BalanceMeasurement measurement = receiverService.processSensorData(sensorData);
             return ResponseEntity.ok(measurement);
         } catch (Exception e) {
             log.error("添加测量数据失败", e);
