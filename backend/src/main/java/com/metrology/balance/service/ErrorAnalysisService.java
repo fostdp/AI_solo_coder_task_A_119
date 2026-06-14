@@ -4,6 +4,7 @@ import com.metrology.balance.dto.MonteCarloResult;
 import com.metrology.balance.entity.Balance;
 import com.metrology.balance.entity.BalanceMeasurement;
 import com.metrology.balance.entity.ErrorAnalysis;
+import com.metrology.balance.model.KnifeEdgeWearModel;
 import com.metrology.balance.repository.BalanceMeasurementRepository;
 import com.metrology.balance.repository.BalanceRepository;
 import com.metrology.balance.repository.ErrorAnalysisRepository;
@@ -109,13 +110,28 @@ public class ErrorAnalysisService {
     private double[] simulateErrors(Balance balance, List<BalanceMeasurement> measurements, int count) {
         double[] errors = new double[count];
 
-        DescriptiveStatistics frictionStats = new DescriptiveStatistics();
+        KnifeEdgeWearModel wearModel = KnifeEdgeWearModel.createWithMaterial(balance.getMaterial());
+
+        double totalWearDepth = 0;
+        long totalCount = 0;
+        double avgTemperature = 20.0;
+        double avgHumidity = 50.0;
+        double avgTemperatureVar = 5.0;
+        double avgHumidityVar = 15.0;
+
         DescriptiveStatistics armLengthDiffStats = new DescriptiveStatistics();
         DescriptiveStatistics weightErrorStats = new DescriptiveStatistics();
 
         for (BalanceMeasurement m : measurements) {
-            if (m.getKnifeEdgeFriction() != null) {
-                frictionStats.addValue(m.getKnifeEdgeFriction().doubleValue());
+            if (m.getKnifeEdgeWearDepth() != null) {
+                totalWearDepth = Math.max(totalWearDepth, m.getKnifeEdgeWearDepth().doubleValue());
+            }
+            totalCount = Math.max(totalCount, measurements.size());
+            if (m.getTemperature() != null) {
+                avgTemperature = m.getTemperature().doubleValue();
+            }
+            if (m.getHumidity() != null) {
+                avgHumidity = m.getHumidity().doubleValue();
             }
             if (m.getLeftArmLength() != null && m.getRightArmLength() != null) {
                 double diff = m.getLeftArmLength().doubleValue() - m.getRightArmLength().doubleValue();
@@ -126,8 +142,11 @@ public class ErrorAnalysisService {
             }
         }
 
-        double frictionMean = frictionStats.getN() > 0 ? frictionStats.getMean() : 0.001;
-        double frictionStd = frictionStats.getN() > 1 ? frictionStats.getStandardDeviation() : frictionMean * 0.1;
+        wearModel.setAccumulatedWearDepth(totalWearDepth);
+        wearModel.setTotalUsageCount(totalCount);
+        if (!measurements.isEmpty()) {
+            wearModel.setFirstUsageTime(measurements.get(measurements.size() - 1).getMeasurementTime());
+        }
 
         double armDiffMean = armLengthDiffStats.getN() > 0 ? armLengthDiffStats.getMean() : 0.0;
         double armDiffStd = armLengthDiffStats.getN() > 1 ? armLengthDiffStats.getStandardDeviation() : 0.5;
@@ -135,25 +154,47 @@ public class ErrorAnalysisService {
         double weightErrorMean = weightErrorStats.getN() > 0 ? weightErrorStats.getMean() : 0.0;
         double weightErrorStd = weightErrorStats.getN() > 1 ? weightErrorStats.getStandardDeviation() : 0.01;
 
-        NormalDistribution frictionDist = new NormalDistribution(frictionMean, frictionStd);
         NormalDistribution armDiffDist = new NormalDistribution(armDiffMean, armDiffStd);
         NormalDistribution weightErrorDist = new NormalDistribution(weightErrorMean, weightErrorStd);
+        NormalDistribution tempDist = new NormalDistribution(avgTemperature, avgTemperatureVar);
+        NormalDistribution humidityDist = new NormalDistribution(avgHumidity, avgHumidityVar);
 
         double avgNominalMass = 10.0;
+        double avgArmLength = 150.0;
         if (!measurements.isEmpty() && measurements.get(0).getNominalMass() != null) {
             avgNominalMass = measurements.get(0).getNominalMass().doubleValue();
         }
+        if (balance.getLeftArmLength() != null) {
+            avgArmLength = balance.getLeftArmLength().doubleValue();
+        }
+
+        KnifeEdgeWearModel.WearReport wearReport = wearModel.getWearReport();
+        log.info("天平[{}]磨损状态: {}, 累计磨损深度={}mm, 使用次数={}",
+                balance.getBalanceCode(), wearReport.getWearStage(),
+                wearReport.getAccumulatedWearDepth(), wearReport.getTotalUsageCount());
 
         for (int i = 0; i < count; i++) {
-            double friction = Math.abs(frictionDist.sample());
+            double progressRatio = (double) i / count;
+            double simulatedWear = totalWearDepth * (1.0 + progressRatio * 0.5);
+            wearModel.setAccumulatedWearDepth(simulatedWear);
+
+            double temperature = Math.max(-10, Math.min(60, tempDist.sample()));
+            double humidity = Math.max(0, Math.min(100, humidityDist.sample()));
+
+            double dynamicFriction = wearModel.calculateDynamicFriction(
+                    avgNominalMass, temperature, humidity, avgArmLength);
+
             double armDiff = armDiffDist.sample();
             double weightErr = weightErrorDist.sample();
 
-            double armLengthRatio = armDiff / 150.0;
+            double armLengthRatio = armDiff / avgArmLength;
             double armLengthError = avgNominalMass * armLengthRatio;
-            double frictionError = friction * avgNominalMass;
+            double frictionError = dynamicFriction * avgNominalMass;
 
-            double totalError = weightErr + armLengthError + frictionError;
+            double humidityBias = (humidity - 50.0) * 0.00001 * avgNominalMass;
+            double tempBias = (temperature - 20.0) * 0.000005 * avgNominalMass;
+
+            double totalError = weightErr + armLengthError + frictionError + humidityBias + tempBias;
             errors[i] = totalError;
         }
 
