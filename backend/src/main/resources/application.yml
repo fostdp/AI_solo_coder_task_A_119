@@ -1,0 +1,57 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: balance-system
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/balance_db
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    open-in-view: false
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+  mqtt:
+    url: tcp://localhost:1883
+    username: admin
+    password: public
+    client-id: balance-backend
+    topic: balance/sensor/#
+    completion-timeout: 30000
+
+websocket:
+  endpoint: /ws
+  topic: /topic/alerts
+
+app:
+  alert:
+    default-threshold: 0.01
+    warning-threshold: 0.005
+
+logging:
+  level:
+    com.metrology.balance: DEBUG
+    org.springframework.integration.mqtt: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
