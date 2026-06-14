@@ -33,7 +33,9 @@ class Balance3D {
         this.frameSkipCounter = 0;
 
         this.physicsEnabled = !this.useLowDetail;
-        this.physicsStep = this.useLowDetail ? 0.05 : 0.016;
+        this.physicsStep = this.useLowDetail
+            ? AppConfig.balance3d.physics.fixedStepLow
+            : AppConfig.balance3d.physics.fixedStepHigh;
         this.physicsAccumulator = 0;
 
         this.swingAngle = 0;
@@ -198,7 +200,7 @@ class Balance3D {
         this.lowDetailGroup = this._createBalanceDetail(false);
 
         this.lod.addLevel(this.highDetailGroup, 0);
-        this.lod.addLevel(this.lowDetailGroup, 350);
+        this.lod.addLevel(this.lowDetailGroup, AppConfig.balance3d.lodSwitchDistance);
 
         this.balanceGroup.add(this.lod);
         this.scene.add(this.balanceGroup);
@@ -434,7 +436,9 @@ class Balance3D {
 
         const handleMove = (dx, dy) => {
             if (this.autoRotate) return;
-            const sensitivity = this.isMobile ? 0.008 : 0.01;
+            const sensitivity = this.isMobile
+                ? AppConfig.balance3d.mobile.rotateSensitivity
+                : AppConfig.balance3d.mobile.desktopRotateSensitivity;
             spherical.theta -= dx * sensitivity;
             spherical.phi -= dy * sensitivity;
             spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
@@ -442,9 +446,13 @@ class Balance3D {
         };
 
         const handleZoom = (delta) => {
-            const zoomSensitivity = this.isMobile ? 0.5 : 0.3;
+            const zoomSensitivity = this.isMobile
+                ? AppConfig.balance3d.mobile.zoomSensitivity
+                : AppConfig.balance3d.mobile.desktopZoomSensitivity;
             spherical.radius += delta * zoomSensitivity;
-            spherical.radius = Math.max(80, Math.min(400, spherical.radius));
+            spherical.radius = Math.max(
+                AppConfig.balance3d.minCameraDistance,
+                Math.min(AppConfig.balance3d.maxCameraDistance, spherical.radius));
             updateCamera();
         };
 
@@ -501,8 +509,10 @@ class Balance3D {
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 const scale = this._touchState.initialPinchDistance / distance;
-                spherical.radius = Math.max(80, Math.min(400,
-                    this._touchState.initialSphericalRadius * scale));
+                spherical.radius = Math.max(
+                    AppConfig.balance3d.minCameraDistance,
+                    Math.min(AppConfig.balance3d.maxCameraDistance,
+                        this._touchState.initialSphericalRadius * scale));
                 updateCamera();
             }
         }, { passive: false });
@@ -595,7 +605,7 @@ class Balance3D {
         if (this._spherical) {
             this._spherical.theta = 0;
             this._spherical.phi = Math.PI / 4;
-            this._spherical.radius = 200;
+            this._spherical.radius = AppConfig.balance3d.maxCameraDistance / 2;
             this._target.set(0, 50, 0);
             this._updateCamera();
         }
@@ -603,14 +613,15 @@ class Balance3D {
 
     _updatePhysics(dt) {
         if (!this.physicsEnabled) {
-            this.swingAngle = Math.sin(this.time * 1.5) * 0.02;
+            this.swingAngle = Math.sin(this.time * AppConfig.balance3d.physics.lowDetailSineFreq)
+                * AppConfig.balance3d.physics.lowDetailSineAmp;
             return;
         }
 
         this.physicsAccumulator += dt;
         while (this.physicsAccumulator >= this.physicsStep) {
-            const restoring = -this.swingAngle * 25.0;
-            const damping = -this.swingVelocity * 1.5;
+            const restoring = -this.swingAngle * AppConfig.balance3d.physics.stiffness;
+            const damping = -this.swingVelocity * AppConfig.balance3d.physics.damping;
             const accel = restoring + damping;
             this.swingVelocity += accel * this.physicsStep;
             this.swingAngle += this.swingVelocity * this.physicsStep;
@@ -631,9 +642,10 @@ class Balance3D {
         const effectiveFps = 1 / Math.max(0.001, this.frameDeltaSmoothing);
 
         if (this.isMobile) {
-            if (effectiveFps < 30 && this.performanceLevel > 1) {
+            if (effectiveFps < AppConfig.balance3d.performance.fpsDropThrottle2
+                    && this.performanceLevel > 1) {
                 this.dynamicFpsThrottle = 2;
-            } else if (effectiveFps < 20) {
+            } else if (effectiveFps < AppConfig.balance3d.performance.fpsDropThrottle3) {
                 this.dynamicFpsThrottle = 3;
                 if (!this.useLowDetail) {
                     this.useLowDetail = true;
@@ -654,7 +666,8 @@ class Balance3D {
         this.time += dt;
 
         if (this.autoRotate && this.balanceGroup) {
-            this.balanceGroup.rotation.y += 0.005 * this.dynamicFpsThrottle;
+            this.balanceGroup.rotation.y +=
+                AppConfig.balance3d.autoRotateSpeed * this.dynamicFpsThrottle;
         }
 
         this._updatePhysics(dt);
@@ -664,7 +677,7 @@ class Balance3D {
             this.knives.forEach(k => { if (k) k.rotation.z = this.swingAngle; });
 
             const beamY = 100;
-            const armLength = 85;
+            const armLength = AppConfig.balance3d.physics.beamArmLength;
             if (this.pans[0]) {
                 this.pans[0].position.x = -armLength * Math.cos(this.swingAngle);
                 this.pans[0].position.y = beamY - 45 - armLength * Math.sin(this.swingAngle);
