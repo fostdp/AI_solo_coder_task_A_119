@@ -2,7 +2,7 @@ package com.metrology.balance.controller;
 
 import com.metrology.balance.dto.MonteCarloResult;
 import com.metrology.balance.entity.ErrorAnalysis;
-import com.metrology.balance.service.ErrorAnalysisService;
+import com.metrology.balance.modules.error_simulator.ErrorSimulatorService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -18,7 +18,7 @@ import java.util.Map;
 @CrossOrigin(origins = "*")
 public class ErrorAnalysisController {
 
-    private final ErrorAnalysisService errorAnalysisService;
+    private final ErrorSimulatorService errorAnalysisService;
 
     @PostMapping("/{balanceId}")
     public ResponseEntity<?> runAnalysis(
