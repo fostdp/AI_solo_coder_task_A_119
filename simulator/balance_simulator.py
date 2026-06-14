@@ -3,6 +3,7 @@
 """
 古代天平模拟器 - MQTT数据发布脚本
 模拟100件古代天平每小时上报传感器数据
+包含基于Archard磨损定律的动态磨损-摩擦模型
 """
 
 import json
@@ -34,9 +35,105 @@ DYNASTIES = [
     "隋", "唐", "五代十国", "北宋", "南宋", "元", "明", "清"
 ]
 
+MATERIAL_PROPERTIES = {
+    "青铜": {"hardness": 150.0, "mu0": 0.0012, "alpha": 0.09, "delta": 0.00008},
+    "铁":   {"hardness": 200.0, "mu0": 0.0015, "alpha": 0.07, "delta": 0.00012},
+    "钢":   {"hardness": 350.0, "mu0": 0.0008, "alpha": 0.05, "delta": 0.00005},
+    "玉石": {"hardness": 500.0, "mu0": 0.0005, "alpha": 0.03, "delta": 0.00003},
+    "玛瑙": {"hardness": 650.0, "mu0": 0.0004, "alpha": 0.02, "delta": 0.00002},
+    "木":   {"hardness": 80.0,  "mu0": 0.0020, "alpha": 0.12, "delta": 0.00020},
+}
+DEFAULT_MATERIAL = "青铜"
+
 BALANCE_TYPES = ["EQUAL_ARM", "UNEQUAL_ARM"]
+MATERIALS = list(MATERIAL_PROPERTIES.keys())
 
 BALANCE_DATA = {}
+
+
+class KnifeEdgeWearSimulator:
+    """刀口磨损-摩擦动态模拟器 (与Java后端KnifeEdgeWearModel一致)
+
+    摩擦公式:
+      μ(h,T,RH) = [μ₀ + α·h^β + γ·h·f(T)] · [1 + δ·(RH/100)²]
+    磨损增量 (修正Archard定律):
+      Δh = k · P · S / (H · √A) · humidity_accel · aging_factor
+    """
+
+    FRACTURE_THRESHOLD = 0.15
+    WEAR_COEFFICIENT = 1.5e-8
+    BETA = 0.65
+    GAMMA = 0.002
+
+    def __init__(self, material=DEFAULT_MATERIAL):
+        props = MATERIAL_PROPERTIES.get(material, MATERIAL_PROPERTIES[DEFAULT_MATERIAL])
+        self.mu0 = props["mu0"]
+        self.hardness = props["hardness"]
+        self.alpha = props["alpha"]
+        self.delta = props["delta"]
+        self.material = material
+
+        self.accumulated_wear = 0.0
+        self.total_usage = 0
+        self.first_usage_time = None
+
+    def _temperature_effect(self, temperature):
+        delta_t = temperature - 20.0
+        return math.exp(abs(delta_t) * 0.015) - 1.0
+
+    def calculate_friction(self, nominal_mass, temperature, humidity, arm_length):
+        h = self.accumulated_wear
+
+        mu_wear = self.mu0 + self.alpha * (h ** self.BETA) + self.GAMMA * h * self._temperature_effect(temperature)
+
+        mu_final = mu_wear * (1.0 + self.delta * ((humidity / 100.0) ** 2))
+
+        if h > self.FRACTURE_THRESHOLD:
+            fracture_factor = 1.0 + 2.5 * ((h - self.FRACTURE_THRESHOLD) ** 1.5)
+            mu_final *= fracture_factor
+
+        jitter = (random.random() - 0.5) * 2.0 * mu_final * 0.05
+
+        return max(0.0001, mu_final + jitter)
+
+    def record_usage(self, nominal_mass, arm_length, swing_angle_deg, temperature, humidity):
+        if self.first_usage_time is None:
+            self.first_usage_time = datetime.now(CST)
+
+        P = nominal_mass * 9.81 / 1000.0
+        S = 2.0 * math.pi * arm_length * (swing_angle_deg / 360.0) * 3.0
+
+        contact_area = math.pi * (max(0.5, self.accumulated_wear + 0.5) ** 2)
+
+        hardness_factor = 1.0
+        if temperature > 50.0:
+            hardness_factor = max(0.5, 1.0 - (temperature - 50.0) * 0.01)
+
+        delta_h = (self.WEAR_COEFFICIENT * P * S
+                   / (self.hardness * hardness_factor * math.sqrt(contact_area)))
+
+        humidity_accel = 1.0 + self.delta * ((humidity / 100.0) ** 2.5) * 100
+        delta_h *= humidity_accel
+
+        hours_elapsed = 0
+        if self.first_usage_time:
+            hours_elapsed = (datetime.now(CST) - self.first_usage_time).total_seconds() / 3600.0
+        aging_factor = 1.0 + hours_elapsed * 0.0001
+        delta_h *= aging_factor
+
+        self.accumulated_wear += delta_h
+        self.total_usage += 1
+
+        return delta_h
+
+    def get_wear_stage(self):
+        h = self.accumulated_wear
+        if h < 0.01:
+            return "跑合阶段"
+        elif h < self.FRACTURE_THRESHOLD:
+            return "稳定磨损阶段"
+        else:
+            return "剧烈磨损阶段"
 
 
 def init_balance_data():
@@ -44,6 +141,8 @@ def init_balance_data():
     for i in range(1, TOTAL_BALANCES + 1):
         balance_code = f"BAL-{i:04d}"
         balance_type = BALANCE_TYPES[i % 3 == 0 and 1 or 0]
+
+        material = MATERIALS[i % len(MATERIALS)]
 
         base_left_arm = 150.0 + (i % 10) * 5.0 + random.uniform(-1, 1)
         if balance_type == "UNEQUAL_ARM":
@@ -54,49 +153,69 @@ def init_balance_data():
         base_knife_edge = 1.5 + random.uniform(0, 1.0)
         base_error_std = 0.003 + (i % 5) * 0.002
 
+        initial_wear = random.uniform(0, 0.08)
+
+        wear_sim = KnifeEdgeWearSimulator(material)
+        wear_sim.accumulated_wear = initial_wear
+        wear_sim.total_usage = random.randint(0, 500)
+
         BALANCE_DATA[balance_code] = {
             "id": i,
             "code": balance_code,
             "type": balance_type,
+            "material": material,
             "dynasty_index": i % 16,
             "base_left_arm": base_left_arm,
             "base_right_arm": base_right_arm,
             "base_knife_edge": base_knife_edge,
             "base_error_std": base_error_std,
-            "knife_wear_accum": 0.0,
+            "wear_simulator": wear_sim,
+            "initial_wear": initial_wear,
             "measurement_count": 0
         }
 
 
 def generate_measurement(balance_code):
-    """生成单次测量数据"""
+    """生成单次测量数据（使用动态磨损-摩擦模型）"""
     data = BALANCE_DATA[balance_code]
+    wear_sim = data["wear_simulator"]
 
     nominal_mass = random.choice([1.0, 2.0, 5.0, 10.0, 20.0, 50.0])
 
     left_arm = data["base_left_arm"] + random.uniform(-0.1, 0.1)
     right_arm = data["base_right_arm"] + random.uniform(-0.1, 0.1)
 
-    data["knife_wear_accum"] += random.uniform(0, 0.0001)
-    knife_wear = data["base_knife_edge"] * 0.01 + data["knife_wear_accum"]
-    knife_friction = 0.001 + knife_wear * 0.5 + random.uniform(-0.0002, 0.0002)
+    temperature = 20.0 + random.uniform(-5, 15)
+    humidity = 40.0 + random.uniform(0, 50)
+    swing_angle = 3.0 + random.uniform(0, 5.0)
+
+    wear_sim.record_usage(nominal_mass, left_arm, swing_angle, temperature, humidity)
+
+    knife_friction = wear_sim.calculate_friction(nominal_mass, temperature, humidity, left_arm)
+    knife_wear_depth = wear_sim.accumulated_wear
 
     arm_ratio_error = (left_arm - right_arm) / left_arm
     arm_error = nominal_mass * arm_ratio_error
 
-    friction_error = knife_friction * nominal_mass * random.uniform(0.8, 1.2)
+    friction_error = knife_friction * nominal_mass * random.uniform(0.9, 1.1)
 
     weight_error = random.gauss(0, data["base_error_std"])
 
-    total_error = weight_error + arm_error + friction_error
+    humidity_bias = (humidity - 50.0) * 0.00001 * nominal_mass
+    temp_bias = (temperature - 20.0) * 0.000005 * nominal_mass
+
+    total_error = weight_error + arm_error + friction_error + humidity_bias + temp_bias
     measured_mass = nominal_mass + total_error
 
     relative_error = total_error / nominal_mass if nominal_mass != 0 else 0
 
-    temperature = 20.0 + random.uniform(-5, 10)
-    humidity = 40.0 + random.uniform(0, 40)
-
     data["measurement_count"] += 1
+
+    if data["measurement_count"] % 100 == 0:
+        print(f"  [{balance_code}] 磨损阶段: {wear_sim.get_wear_stage()}, "
+              f"累计磨损={wear_sim.accumulated_wear:.6f}mm, "
+              f"摩擦系数={knife_friction:.6f}, "
+              f"使用次数={wear_sim.total_usage}")
 
     measurement = {
         "balanceCode": balance_code,
@@ -107,7 +226,7 @@ def generate_measurement(balance_code):
         "relativeError": round(relative_error, 8),
         "leftArmLength": round(left_arm, 4),
         "rightArmLength": round(right_arm, 4),
-        "knifeEdgeWearDepth": round(knife_wear, 6),
+        "knifeEdgeWearDepth": round(knife_wear_depth, 6),
         "knifeEdgeFriction": round(knife_friction, 6),
         "temperature": round(temperature, 2),
         "humidity": round(humidity, 2)
