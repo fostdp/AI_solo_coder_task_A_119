@@ -1,74 +1,167 @@
 # 古代天平衡器精度检定与误差分析系统
 
-## 项目概述
-
-本系统是一个用于研究古代天平（等臂天平、不等臂天平）精度的全栈应用，涵盖从战国至清代100件古代天平的精度测试数据分析。
-
-## 技术栈
-
-- **后端**: Java Spring Boot 2.7.x
-- **数据库**: PostgreSQL 14+
-- **消息队列**: MQTT (Eclipse Mosquitto)
-- **前端**: HTML5 + Canvas + Three.js
-- **实时通信**: WebSocket
-- **模拟器**: Python
-
-## 项目结构
+## 系统架构
 
 ```
-balance-system/
-├── backend/              # Java Spring Boot 后端
-│   ├── src/
-│   └── pom.xml
-├── frontend/             # 前端应用
-│   ├── index.html
-│   ├── css/
-│   └── js/
-├── database/             # 数据库初始化脚本
-│   └── init.sql
-├── simulator/            # 天平模拟器
-│   └── balance_simulator.py
-└── README.md
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          Docker Compose 编排                            │
+│                                                                         │
+│  ┌──────────┐   MQTT    ┌──────────────────┐   STOMP    ┌───────────┐  │
+│  │ Simulator │──────────▶│  Spring Boot API  │──────────▶│  Frontend  │  │
+│  │ (Python)  │  :1883   │  (Java 11/JRE)    │  WebSocket│  (Nginx)   │  │
+│  └──────────┘          └────────┬─────────┘           └─────┬─────┘  │
+│      ▲                          │                           │         │
+│      │                          │ JPA/JDBC                  │ proxy   │
+│      │                          ▼                           │ :80→:8080│
+│      │                  ┌──────────────┐                    │         │
+│      │                  │  PostgreSQL   │                    │         │
+│      │                  │  (:5432)      │                    │         │
+│      │                  └──────────────┘                    │         │
+│      │                                                      │         │
+│      │  MQTT Broker                                         │         │
+│      │  ┌──────────────┐                                    │         │
+│      └──│  Mosquitto   │◀──────────────────────────────────┘         │
+│         │  (:1883)      │                                            │
+│         └──────────────┘                                             │
+│                                                                         │
+│  ┌──────────────┐                                                     │
+│  │  Prometheus   │  scrape /api/actuator/prometheus                   │
+│  │  (:9090)      │◀──────────────────────────────────────             │
+│  └──────────────┘                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 核心功能
+## 数据流
 
-1. **天平数据采集**: 通过MQTT接收模拟传感器数据（砝码质量、刀口磨损深度、臂长、称量误差）
-2. **三维可视化**: Three.js绘制天平三维模型，刀口和横梁高亮显示
-3. **误差分析**: 基于刀口摩擦、臂长不等和砝码误差的蒙特卡洛模拟
-4. **权衡制度分析**: 基于出土砝码质量的聚类分析，推断各朝代斤两标准
-5. **告警系统**: 误差超过允差时通过WebSocket实时推送预警
+```
+Simulator ──MQTT──▶ MqttReceiver ──Event──▶ AlarmWebSocket ──STOMP──▶ Frontend
+                        │                                        │
+                   save to DB                              3D + Charts
+                        │
+              ┌─────────┴──────────┐
+              │                    │
+     ErrorSimulator      MetrologyAnalyzer
+     (Monte Carlo)       (K-Means + Bayes)
+              │                    │
+         Event:EventAnalysis   Event:MetrologyAnalysis
+```
 
-## 快速开始
+## 模块说明
 
-### 1. 数据库初始化
+### 后端模块 (Spring Boot 2.7)
+
+| 模块 | 包路径 | 职责 |
+|------|--------|------|
+| **mqtt_receiver** | `modules.mqtt_receiver` | MQTT数据接收、磨损模型集成、融合校准、告警判定 |
+| **error_simulator** | `modules.error_simulator` | 蒙特卡洛误差仿真(10万次)、动态摩擦、三源合成 |
+| **metrology_analyzer** | `modules.metrology_analyzer` | K-Means++聚类、先验过滤、贝叶斯后验校正 |
+| **alarm_ws** | `modules.alarm_ws` | Spring Events监听、@Async STOMP推送 |
+
+模块间通过 Spring ApplicationEvent 解耦：
+- `MeasurementSavedEvent` → 测量保存后广播
+- `AlertTriggeredEvent` → 告警触发后异步推送WebSocket
+- `ErrorAnalysisCompletedEvent` → 蒙特卡洛完成后广播
+- `MetrologyAnalysisCompletedEvent` → 聚类分析完成后广播
+
+### 前端文件
+
+| 文件 | 职责 |
+|------|------|
+| `config.js` | 全局配置(API_BASE/WS_URL/物理参数/性能阈值) |
+| `balance3d.js` | Three.js天平三维渲染 + LOD + 物理模拟 + 触控 |
+| `charts.js` | Canvas误差曲线图 + 直方图 |
+| `metrology_panel.js` | API客户端 + 面板控制 + WebSocket告警订阅 |
+| `app.js` | Bootstrap入口 |
+
+### 核心算法
+
+- **磨损模型**: Archard定律 Δh = k·P·S/(H·√A) + 摩擦学公式 μ(h,T,RH)
+- **蒙特卡洛**: 10万次采样，动态摩擦随磨损推进，温湿度偏置
+- **聚类分析**: K-Means++ + 16朝代先验知识库 + 贝叶斯后验校正
+
+## 快速部署
+
+### 前提条件
+
+- Docker 20.10+
+- Docker Compose v2.0+
+
+### 一键启动
 
 ```bash
-psql -U postgres -d balance_db -f database/init.sql
+# 构建并启动所有服务
+docker-compose up --build -d
+
+# 查看服务状态
+docker-compose ps
+
+# 查看后端日志
+docker-compose logs -f backend
+
+# 查看模拟器日志
+docker-compose logs -f simulator
 ```
 
-### 2. 启动后端
+### 访问地址
+
+| 服务 | URL |
+|------|-----|
+| 前端界面 | http://localhost |
+| 后端API | http://localhost:8080/api |
+| Actuator健康检查 | http://localhost:8080/api/actuator/health |
+| Prometheus指标 | http://localhost:8080/api/actuator/prometheus |
+| Prometheus UI | http://localhost:9090 |
+| MQTT Broker | localhost:1883 |
+| PostgreSQL | localhost:5432 |
+
+### 环境变量
+
+模拟器支持以下环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MQTT_BROKER` | localhost | MQTT Broker地址 |
+| `MQTT_PORT` | 1883 | MQTT端口 |
+| `SIM_MODE` | normal | 运行模式: normal/fast/single |
+| `TOTAL_BALANCES` | 100 | 模拟天平数量 |
+| `PUBLISH_INTERVAL` | 3600 | 正常模式发布间隔(秒) |
+| `FAST_INTERVAL` | 5 | 快速模式发布间隔(秒) |
+
+## 监控
+
+### Actuator端点
+
+- `/api/actuator/health` - 健康检查
+- `/api/actuator/prometheus` - Prometheus指标
+- `/api/actuator/metrics` - JVM/HTTP指标
+- `/api/actuator/env` - 环境变量
+- `/api/actuator/loggers` - 日志级别管理
+
+### 关键Prometheus指标
+
+- `http_server_requests_seconds` - API请求延迟
+- `jvm_memory_used_bytes` - JVM内存使用
+- `hikaricp_connections_active` - 数据库连接池
+- `mqtt_messages_received_total` - MQTT消息接收数
+
+## 数据库索引
+
+已在 `init.sql` 中创建以下索引：
+
+- `idx_balance_measurements_balance_time` - 按天平+时间联合查询(最频繁)
+- `idx_balance_measurements_wear` - 按天平+磨损深度查询
+- `idx_balance_measurements_friction` - 按天平+摩擦系数查询
+- `idx_balance_measurements_alert` - 部分索引(仅告警记录)
+- `idx_weights_actual_mass` - 砝码质量聚类查询
+- `idx_alerts_level_time` - 按告警级别+时间查询
+- `idx_balances_dynasty/type/material` - 天平筛选查询
+
+## 停止服务
 
 ```bash
-cd backend
-mvn spring-boot:run
+# 停止所有容器
+docker-compose down
+
+# 停止并清除数据卷
+docker-compose down -v
 ```
-
-### 3. 启动MQTT broker (可选)
-
-```bash
-# 使用Docker
-docker run -d -p 1883:1883 eclipse-mosquitto
-```
-
-### 4. 运行模拟器
-
-```bash
-cd simulator
-pip install paho-mqtt
-python balance_simulator.py
-```
-
-### 5. 访问前端
-
-直接在浏览器中打开 `frontend/index.html`
