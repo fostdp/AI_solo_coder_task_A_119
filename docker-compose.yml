@@ -8,18 +8,24 @@ services:
       POSTGRES_DB: balance_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
     networks:
       - balance-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d balance_db"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   mosquitto:
     image: eclipse-mosquitto:2.0-alpine
@@ -35,10 +41,19 @@ services:
     command: >
       sh -c "echo 'listener 1883' > /mosquitto/config/mosquitto.conf &&
              echo 'allow_anonymous true' >> /mosquitto/config/mosquitto.conf &&
+             echo 'max_connections -1' >> /mosquitto/config/mosquitto.conf &&
+             echo 'max_queued_messages 1000' >> /mosquitto/config/mosquitto.conf &&
              mosquitto -c /mosquitto/config/mosquitto.conf"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t health -m ok || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: balance-backend
     ports:
       - "8080:8080"
@@ -49,6 +64,8 @@ services:
       SPRING_MQTT_URL: tcp://mosquitto:1883
       SPRING_MQTT_USERNAME: admin
       SPRING_MQTT_PASSWORD: public
+      SPRING_MQTT_CLIENT-ID: balance-backend-docker
+      JAVA_OPTS: "-XX:+UseG1GC -XX:MaxRAMPercentage=75.0"
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,11 +73,85 @@ services:
         condition: service_started
     networks:
       - balance-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: balance-simulator
+    environment:
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USERNAME: admin
+      MQTT_PASSWORD: public
+      SIM_MODE: fast
+    depends_on:
+      mosquitto:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    networks:
+      - balance-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: balance-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - balance-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: balance-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - balance-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
 volumes:
   postgres_data:
   mosquitto_data:
   mosquitto_log:
+  prometheus_data:
 
 networks:
   balance-network:
