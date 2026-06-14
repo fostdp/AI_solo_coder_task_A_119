@@ -4,6 +4,7 @@ import com.metrology.balance.dto.BalanceSensorData;
 import com.metrology.balance.entity.Alert;
 import com.metrology.balance.entity.Balance;
 import com.metrology.balance.entity.BalanceMeasurement;
+import com.metrology.balance.model.KnifeEdgeWearModel;
 import com.metrology.balance.repository.AlertRepository;
 import com.metrology.balance.repository.BalanceMeasurementRepository;
 import com.metrology.balance.repository.BalanceRepository;
@@ -21,6 +22,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -31,6 +33,8 @@ public class BalanceMeasurementService {
     private final BalanceMeasurementRepository measurementRepository;
     private final AlertRepository alertRepository;
     private final SimpMessagingTemplate messagingTemplate;
+
+    private final ConcurrentHashMap<String, KnifeEdgeWearModel> wearModelCache = new ConcurrentHashMap<>();
 
     @Value("${app.alert.default-threshold:0.01}")
     private double defaultThreshold;
@@ -77,9 +81,75 @@ public class BalanceMeasurementService {
         measurement.setLeftArmLength(sensorData.getLeftArmLength());
         measurement.setRightArmLength(sensorData.getRightArmLength());
         measurement.setKnifeEdgeWearDepth(sensorData.getKnifeEdgeWearDepth());
-        measurement.setKnifeEdgeFriction(sensorData.getKnifeEdgeFriction());
         measurement.setTemperature(sensorData.getTemperature());
         measurement.setHumidity(sensorData.getHumidity());
+
+        KnifeEdgeWearModel wearModel = wearModelCache.computeIfAbsent(
+                balance.getBalanceCode(),
+                k -> {
+                    KnifeEdgeWearModel m = KnifeEdgeWearModel.createWithMaterial(balance.getMaterial());
+                    List<BalanceMeasurement> hist = measurementRepository
+                            .findByBalanceIdOrderByMeasurementTimeDesc(balance.getId());
+                    if (!hist.isEmpty()) {
+                        double maxWear = hist.stream()
+                                .filter(h -> h.getKnifeEdgeWearDepth() != null)
+                                .mapToDouble(h -> h.getKnifeEdgeWearDepth().doubleValue())
+                                .max().orElse(0);
+                        m.setAccumulatedWearDepth(maxWear);
+                        m.setTotalUsageCount((long) hist.size());
+                        if (!hist.isEmpty()) {
+                            m.setFirstUsageTime(hist.get(hist.size() - 1).getMeasurementTime());
+                        }
+                    }
+                    return m;
+                });
+
+        double nominalMass = sensorData.getNominalMass() != null
+                ? sensorData.getNominalMass().doubleValue() : 10.0;
+        double temperature = sensorData.getTemperature() != null
+                ? sensorData.getTemperature().doubleValue() : 20.0;
+        double humidity = sensorData.getHumidity() != null
+                ? sensorData.getHumidity().doubleValue() : 50.0;
+        double armLength = sensorData.getLeftArmLength() != null
+                ? sensorData.getLeftArmLength().doubleValue() : 150.0;
+
+        if (sensorData.getKnifeEdgeWearDepth() != null) {
+            wearModel.setAccumulatedWearDepth(sensorData.getKnifeEdgeWearDepth().doubleValue());
+        }
+
+        wearModel.recordUsage(nominalMass, armLength, 5.0, temperature, humidity);
+
+        double expectedFriction = wearModel.calculateDynamicFriction(
+                nominalMass, temperature, humidity, armLength);
+
+        double reportedFriction = sensorData.getKnifeEdgeFriction() != null
+                ? sensorData.getKnifeEdgeFriction().doubleValue() : expectedFriction;
+
+        double frictionDeviation = Math.abs(reportedFriction - expectedFriction) / expectedFriction;
+        if (frictionDeviation > 0.3) {
+            log.warn("天平[{}]摩擦系数偏差过大: 报告={}, 模型预期={}, 偏差={}%",
+                    balance.getBalanceCode(),
+                    String.format("%.6f", reportedFriction),
+                    String.format("%.6f", expectedFriction),
+                    String.format("%.1f", frictionDeviation * 100));
+        }
+
+        double calibratedFriction = 0.7 * reportedFriction + 0.3 * expectedFriction;
+        measurement.setKnifeEdgeFriction(BigDecimal.valueOf(calibratedFriction)
+                .setScale(6, RoundingMode.HALF_UP));
+
+        if (sensorData.getKnifeEdgeWearDepth() == null) {
+            measurement.setKnifeEdgeWearDepth(
+                    BigDecimal.valueOf(wearModel.getAccumulatedWearDepth() == null
+                            ? 0.0 : wearModel.getAccumulatedWearDepth())
+                            .setScale(6, RoundingMode.HALF_UP));
+        }
+
+        KnifeEdgeWearModel.WearReport wearReport = wearModel.getWearReport();
+        if (wearReport.getWearStage() == KnifeEdgeWearModel.WearStage.SEVERE.name()) {
+            log.warn("天平[{}]进入剧烈磨损阶段: {}", balance.getBalanceCode(),
+                    wearReport.getWearStageDescription());
+        }
 
         if (sensorData.getNominalMass() != null && sensorData.getNominalMass().compareTo(BigDecimal.ZERO) > 0
                 && sensorData.getWeighingError() != null) {
