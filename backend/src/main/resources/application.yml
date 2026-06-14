@@ -48,6 +48,52 @@ app:
   alert:
     default-threshold: 0.01
     warning-threshold: 0.005
+    critical-multiplier: 2.0
+    friction-deviation-warn-pct: 0.30
+    sensor-weight: 0.7
+    model-weight: 0.3
+
+  error-simulation:
+    default-simulation-count: 100000
+    max-simulation-count: 500000
+    coverage-factor: 2.0
+    histogram-bins: 50
+    error-sample-points: 1000
+    humidity-bias-per-pct-per-gram: 0.00001
+    temperature-bias-per-deg-per-gram: 0.000005
+    default-avg-temperature: 20.0
+    default-avg-humidity: 50.0
+    default-temperature-std: 5.0
+    default-humidity-std: 15.0
+    wear-progress-factor: 0.5
+    min-temperature: -10.0
+    max-temperature: 60.0
+    default-sensor-nominal-mass: 10.0
+
+  metrology:
+    default-k-means-iterations: 100
+    default-max-clusters: 10
+    hard-max-clusters: 8
+    min-sample-count: 3
+    jin-to-liang-ratio: 16.0
+    sample-count-penalty-factor: 0.5
+    max-prior-match-score: 4.0
+    max-liang-multiple-check: 32
+    max-jin-multiple-check: 4
+
+  weighing-physics:
+    default-swing-angle-deg: 5.0
+    fracture-wear-threshold-mm: 0.15
+    running-in-wear-max-mm: 0.01
+    friction-jitter-pct: 0.05
+    humidity-accel-multiplier: 100.0
+    aging-per-hour-factor: 0.0001
+    high-temp-threshold: 50.0
+    high-temp-softening-pct-per-deg: 0.01
+    min-hardness-factor: 0.5
+    default-temperature-reference: 20.0
+    default-sensor-nominal-mass: 10.0
+    default-arm-length-mm: 150.0
 
 logging:
   level:
