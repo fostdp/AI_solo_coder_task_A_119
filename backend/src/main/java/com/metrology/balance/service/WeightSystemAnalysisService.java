@@ -3,6 +3,7 @@ package com.metrology.balance.service;
 import com.metrology.balance.dto.ClusterAnalysisResult;
 import com.metrology.balance.entity.Weight;
 import com.metrology.balance.entity.WeightSystemAnalysis;
+import com.metrology.balance.model.WeightSystemPrior;
 import com.metrology.balance.repository.WeightRepository;
 import com.metrology.balance.repository.WeightSystemAnalysisRepository;
 import lombok.RequiredArgsConstructor;
@@ -43,22 +44,87 @@ public class WeightSystemAnalysisService {
             throw new IllegalStateException("没有足够的砝码数据进行分析");
         }
 
-        List<Double> actualMasses = weights.stream()
+        List<Double> rawActualMasses = weights.stream()
                 .filter(w -> w.getActualMass() != null)
                 .map(w -> w.getActualMass().doubleValue())
                 .collect(Collectors.toList());
 
-        if (actualMasses.size() < 3) {
+        if (rawActualMasses.size() < 3) {
             throw new IllegalStateException("有效砝码样本不足，无法进行聚类分析");
+        }
+
+        WeightSystemPrior prior = null;
+        List<Double> actualMasses = rawActualMasses;
+
+        if (dynastyId != null) {
+            prior = WeightSystemPrior.getPrior(dynastyId);
+            if (prior != null) {
+                log.info("应用朝代[{}]先验知识: 斤={}g±{}g, 两={}g±{}g, 可信度={}",
+                        prior.getDynastyName(),
+                        prior.getPriorJinStandard(), prior.getPriorJinStd(),
+                        prior.getPriorLiangStandard(), prior.getPriorLiangStd(),
+                        prior.getCredibility());
+
+                actualMasses = filterByPrior(rawActualMasses, prior);
+
+                if (actualMasses.size() < 3) {
+                    log.warn("先验过滤后样本不足({}→{})，回退到原始样本",
+                            rawActualMasses.size(), actualMasses.size());
+                    actualMasses = rawActualMasses;
+                } else {
+                    log.info("先验过滤: 样本从{}减少到{}, 剔除{}个可疑样本",
+                            rawActualMasses.size(), actualMasses.size(),
+                            rawActualMasses.size() - actualMasses.size());
+                }
+            }
         }
 
         int k = clusterCount > 0 ? clusterCount : determineOptimalClusters(actualMasses);
 
-        ClusterAnalysisResult result = performKMeansClustering(actualMasses, k, weights, dynastyId);
+        ClusterAnalysisResult result = performKMeansClustering(actualMasses, k, weights, dynastyId, prior);
 
         saveAnalysisResult(dynastyId, result, weights.size());
 
         return result;
+    }
+
+    private List<Double> filterByPrior(List<Double> masses, WeightSystemPrior prior) {
+        double priorJin = prior.getPriorJinStandard();
+        double priorLiang = prior.getPriorLiangStandard();
+        double tolerance = 3.0 * prior.getPriorJinStd();
+
+        return masses.stream().filter(m -> {
+            double ratioToJin = m / priorJin;
+            double ratioToLiang = m / priorLiang;
+
+            boolean nearLiangMultiple = false;
+            for (int n = 1; n <= 32; n++) {
+                double expected = n * priorLiang;
+                if (Math.abs(m - expected) < 3.0 * n * prior.getPriorLiangStd()) {
+                    nearLiangMultiple = true;
+                    break;
+                }
+            }
+
+            boolean nearJinMultiple = false;
+            for (int n = 1; n <= 4; n++) {
+                double expected = n * priorJin;
+                if (Math.abs(m - expected) < tolerance) {
+                    nearJinMultiple = true;
+                    break;
+                }
+            }
+
+            boolean isOutlier = prior.isPriorOutlier(m) && !nearLiangMultiple && !nearJinMultiple;
+
+            if (isOutlier) {
+                log.debug("剔除先验异常样本: {}g, 距先验{}σ",
+                        String.format("%.3f", m),
+                        String.format("%.2f", prior.mahalanobisDistanceFromPrior(m)));
+            }
+
+            return !isOutlier;
+        }).collect(Collectors.toList());
     }
 
     private int determineOptimalClusters(List<Double> data) {
@@ -85,7 +151,7 @@ public class WeightSystemAnalysisService {
     }
 
     private ClusterAnalysisResult performKMeansClustering(
-            List<Double> data, int k, List<Weight> weights, Integer dynastyId) {
+            List<Double> data, int k, List<Weight> weights, Integer dynastyId, WeightSystemPrior prior) {
 
         List<DoublePoint> points = new ArrayList<>();
         for (Double value : data) {
@@ -98,12 +164,10 @@ public class WeightSystemAnalysisService {
         List<CentroidCluster<DoublePoint>> clusters = clusterer.cluster(points);
 
         List<ClusterAnalysisResult.ClusterInfo> clusterInfos = new ArrayList<>();
-        List<Double> clusterCenters = new ArrayList<>();
 
         for (int i = 0; i < clusters.size(); i++) {
             CentroidCluster<DoublePoint> cluster = clusters.get(i);
             double center = cluster.getCenter().getPoint()[0];
-            clusterCenters.add(center);
 
             List<Double> clusterData = cluster.getPoints().stream()
                     .map(p -> p.getPoint()[0])
@@ -129,18 +193,117 @@ public class WeightSystemAnalysisService {
 
         double silhouetteScore = calculateSilhouetteScore(data, k);
 
-        BigDecimal liangStandard = estimateLiangStandard(clusterInfos);
-        BigDecimal jinStandard = liangStandard.multiply(BigDecimal.valueOf(JIN_TO_LIANG_RATIO))
-                .setScale(4, RoundingMode.HALF_UP);
+        ClusterAnalysisResult.ClusterInfo liangCluster = findBestLiangCluster(clusterInfos, prior);
+
+        BigDecimal rawLiangStandard = liangCluster.getCenter();
+        BigDecimal rawLiangStd = liangCluster.getStdDev();
+        int liangSampleCount = liangCluster.getSampleCount();
+
+        BigDecimal liangStandard;
+        BigDecimal jinStandard;
+        String method;
+
+        if (prior != null) {
+            BigDecimal posteriorLiang = prior.getPosteriorLiang(
+                    rawLiangStandard, rawLiangStd, liangSampleCount);
+            BigDecimal posteriorJin = prior.getPosteriorJin(
+                    rawLiangStandard.multiply(BigDecimal.valueOf(JIN_TO_LIANG_RATIO)),
+                    rawLiangStd.multiply(BigDecimal.valueOf(JIN_TO_LIANG_RATIO)),
+                    liangSampleCount);
+
+            double rawLiang = rawLiangStandard.doubleValue();
+            double adjustedLiang = posteriorLiang.doubleValue();
+            double correctionPercent = Math.abs(adjustedLiang - rawLiang) / rawLiang * 100;
+
+            log.info("Bayes校正: 原始两标准={}g, 先验={}g(±{}g), 后验={}g, 校正幅度={}%, " +
+                            "先验可信度={}, 样本数={}",
+                    String.format("%.4f", rawLiang),
+                    String.format("%.4f", prior.getPriorLiangStandard()),
+                    String.format("%.4f", prior.getPriorLiangStd()),
+                    String.format("%.4f", adjustedLiang),
+                    String.format("%.2f", correctionPercent),
+                    prior.getCredibility(),
+                    liangSampleCount);
+
+            liangStandard = posteriorLiang;
+            jinStandard = posteriorJin;
+            method = "K_MEANS_BAYES_PRIOR";
+        } else {
+            liangStandard = rawLiangStandard;
+            jinStandard = rawLiangStandard.multiply(BigDecimal.valueOf(JIN_TO_LIANG_RATIO))
+                    .setScale(4, RoundingMode.HALF_UP);
+            method = "K_MEANS";
+        }
 
         return ClusterAnalysisResult.builder()
                 .clusterCount(k)
                 .silhouetteScore(BigDecimal.valueOf(silhouetteScore).setScale(6, RoundingMode.HALF_UP))
-                .method("K_MEANS")
+                .method(method)
                 .jinStandard(jinStandard)
                 .liangStandard(liangStandard)
                 .clusters(clusterInfos)
                 .build();
+    }
+
+    private ClusterAnalysisResult.ClusterInfo findBestLiangCluster(
+            List<ClusterAnalysisResult.ClusterInfo> clusters, WeightSystemPrior prior) {
+
+        if (clusters == null || clusters.isEmpty()) {
+            return ClusterAnalysisResult.ClusterInfo.builder()
+                    .center(BigDecimal.valueOf(15.625))
+                    .stdDev(BigDecimal.valueOf(1.0))
+                    .sampleCount(1)
+                    .build();
+        }
+
+        if (prior != null) {
+            double priorLiang = prior.getPriorLiangStandard();
+            double priorJin = prior.getPriorJinStandard();
+
+            ClusterAnalysisResult.ClusterInfo bestMatch = null;
+            double bestScore = Double.MAX_VALUE;
+
+            for (ClusterAnalysisResult.ClusterInfo cluster : clusters) {
+                double center = cluster.getCenter().doubleValue();
+
+                double liangScore = Math.abs(center - priorLiang) / prior.getPriorLiangStd();
+                double minJinScore = Double.MAX_VALUE;
+                for (int n = 1; n <= 16; n++) {
+                    double expectedJin = n * priorJin;
+                    double score = Math.abs(center - expectedJin) / (n * prior.getPriorJinStd());
+                    if (score < minJinScore) minJinScore = score;
+                }
+
+                double minLiangMultipleScore = Double.MAX_VALUE;
+                for (int n = 1; n <= 32; n++) {
+                    double expected = n * priorLiang;
+                    double score = Math.abs(center - expected) / (n * prior.getPriorLiangStd());
+                    if (score < minLiangMultipleScore) minLiangMultipleScore = score;
+                }
+
+                double combinedScore = Math.min(liangScore, Math.min(minJinScore, minLiangMultipleScore));
+                double penalty = cluster.getSampleCount() > 0
+                        ? 1.0 / Math.sqrt(cluster.getSampleCount()) : 10.0;
+                combinedScore += penalty * 0.5;
+
+                if (combinedScore < bestScore) {
+                    bestScore = combinedScore;
+                    bestMatch = cluster;
+                }
+            }
+
+            if (bestMatch != null && bestScore < 4.0) {
+                log.info("先验匹配成功: 最近聚类中心={}g, 匹配得分={}",
+                        String.format("%.4f", bestMatch.getCenter().doubleValue()),
+                        String.format("%.3f", bestScore));
+                return bestMatch;
+            } else {
+                log.warn("所有聚类与先验偏差较大(最佳得分={}), 将使用最小聚类中心",
+                        String.format("%.3f", bestScore));
+            }
+        }
+
+        return clusters.get(0);
     }
 
     private double calculateSilhouetteScore(List<Double> data, int k) {
