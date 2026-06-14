@@ -1,0 +1,105 @@
+# Java
+*.class
+*.log
+*.ctxt
+.mtj.tmp/
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+replay_pid*
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Database
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+
+# Temp
+tmp/
+temp/
+
+# --- Auto-added by uploader ---
+# --- Node.js ---
+node_modules
+pnpm-debug.log*
+.npm
+# --- Java / Maven ---
+target
+# --- Python ---
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+env
+.tox
+.pytest_cache
+# --- IDE / Editor ---
+.idea
+.vscode
+# --- Project local ---
+.trae
+dist
+build
+.cache
+.output
+.nuxt
+.next
+coverage
+# --- Env ---
+.env
+.env.local
+.env.*.local
