@@ -4,7 +4,7 @@ import com.metrology.balance.dto.ClusterAnalysisResult;
 import com.metrology.balance.entity.Weight;
 import com.metrology.balance.entity.WeightSystemAnalysis;
 import com.metrology.balance.repository.WeightRepository;
-import com.metrology.balance.service.WeightSystemAnalysisService;
+import com.metrology.balance.modules.metrology_analyzer.MetrologyAnalyzerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -20,7 +20,7 @@ import java.util.Map;
 @CrossOrigin(origins = "*")
 public class WeightSystemController {
 
-    private final WeightSystemAnalysisService analysisService;
+    private final MetrologyAnalyzerService analysisService;
     private final WeightRepository weightRepository;
 
     @PostMapping("/analyze")
