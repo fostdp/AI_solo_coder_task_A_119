@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS balance_measurements (
 CREATE INDEX IF NOT EXISTS idx_balance_measurements_balance_id ON balance_measurements(balance_id);
 CREATE INDEX IF NOT EXISTS idx_balance_measurements_time ON balance_measurements(measurement_time);
 CREATE INDEX IF NOT EXISTS idx_balance_measurements_alert ON balance_measurements(is_alert) WHERE is_alert = TRUE;
+CREATE INDEX IF NOT EXISTS idx_balance_measurements_balance_time ON balance_measurements(balance_id, measurement_time DESC);
+CREATE INDEX IF NOT EXISTS idx_balance_measurements_wear ON balance_measurements(balance_id, knife_edge_wear_depth DESC);
+CREATE INDEX IF NOT EXISTS idx_balance_measurements_friction ON balance_measurements(balance_id, knife_edge_friction);
 
 -- ============================================================
 -- 误差分析结果表
@@ -113,6 +116,7 @@ CREATE TABLE IF NOT EXISTS error_analyses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_error_analyses_balance_id ON error_analyses(balance_id);
+CREATE INDEX IF NOT EXISTS idx_error_analyses_time ON error_analyses(analysis_time DESC);
 
 -- ============================================================
 -- 权衡制度分析表
@@ -150,6 +154,17 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_balance_id ON alerts(balance_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(is_resolved) WHERE is_resolved = FALSE;
+CREATE INDEX IF NOT EXISTS idx_alerts_level_time ON alerts(alert_level, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_weights_dynasty ON weights(dynasty_id);
+CREATE INDEX IF NOT EXISTS idx_weights_actual_mass ON weights(actual_mass);
+
+CREATE INDEX IF NOT EXISTS idx_balances_dynasty ON balances(dynasty_id);
+CREATE INDEX IF NOT EXISTS idx_balances_type ON balances(balance_type);
+CREATE INDEX IF NOT EXISTS idx_balances_material ON balances(material);
+
+CREATE INDEX IF NOT EXISTS idx_weight_system_dynasty ON weight_system_analyses(dynasty_id);
 
 -- ============================================================
 -- 初始化数据 - 朝代
